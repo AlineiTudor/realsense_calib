@@ -169,6 +169,20 @@ class CalibrationNode(Node):
                 )
             return
 
+        if len(self.samples) == 0:
+            t_a = T_cam1_boardA[:3, 3]
+            r_a = Rotation.from_matrix(T_cam1_boardA[:3, :3]).as_euler('xyz')
+            t_b = T_cam2_boardB[:3, 3]
+            r_b = Rotation.from_matrix(T_cam2_boardB[:3, :3]).as_euler('xyz')
+            self.get_logger().info(f'DEBUG T_cam1_boardA — t: [{t_a[0]:.4f}, {t_a[1]:.4f}, {t_a[2]:.4f}], '
+                                   f'rpy: [{r_a[0]:.4f}, {r_a[1]:.4f}, {r_a[2]:.4f}]')
+            self.get_logger().info(f'DEBUG T_cam2_boardB — t: [{t_b[0]:.4f}, {t_b[1]:.4f}, {t_b[2]:.4f}], '
+                                   f'rpy: [{r_b[0]:.4f}, {r_b[1]:.4f}, {r_b[2]:.4f}]')
+            t_l = self.T_boardA_boardB[:3, 3]
+            r_l = Rotation.from_matrix(self.T_boardA_boardB[:3, :3]).as_euler('xyz')
+            self.get_logger().info(f'DEBUG T_boardA_boardB — t: [{t_l[0]:.4f}, {t_l[1]:.4f}, {t_l[2]:.4f}], '
+                                   f'rpy: [{r_l[0]:.4f}, {r_l[1]:.4f}, {r_l[2]:.4f}]')
+
         T_cam1_cam2 = T_cam1_boardA @ self.T_boardA_boardB @ np.linalg.inv(T_cam2_boardB)
         self.samples.append(T_cam1_cam2)
 
