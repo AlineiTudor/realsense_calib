@@ -35,6 +35,7 @@ class CalibrationNode(Node):
 
         self.pose_pairs = []
         self.last_accepted_T1 = None
+        self.last_capture_time = 0.0
 
         self._setup_boards()
         self._setup_subscribers()
@@ -48,8 +49,13 @@ class CalibrationNode(Node):
             'Move the CAMERA RIG between captures (boards stay still).'
         )
         self.get_logger().info(
-            f'Movement threshold: {self.min_translation_m:.3f}m or '
-            f'{self.min_rotation_deg:.1f}deg between poses.'
+            f'Each pose must differ by >= {self.min_translation_m:.2f}m AND '
+            f'>= {self.min_rotation_deg:.0f}deg. '
+            f'Cooldown: {self.capture_cooldown_s:.0f}s between captures.'
+        )
+        self.get_logger().info(
+            'IMPORTANT: Include large rotations (tilt/rotate the rig 15-30 '
+            'degrees between positions) for accurate results.'
         )
 
     def _declare_params(self):
@@ -70,8 +76,9 @@ class CalibrationNode(Node):
         self.board_b_cfg = cfg['board_b']
         self.calib_cfg = cfg['calibration']
         self.min_samples = self.calib_cfg['min_samples']
-        self.min_translation_m = self.calib_cfg.get('min_translation_m', 0.03)
-        self.min_rotation_deg = self.calib_cfg.get('min_rotation_deg', 8.0)
+        self.min_translation_m = self.calib_cfg.get('min_translation_m', 0.05)
+        self.min_rotation_deg = self.calib_cfg.get('min_rotation_deg', 15.0)
+        self.capture_cooldown_s = self.calib_cfg.get('capture_cooldown_s', 2.0)
         self.output_file = self.calib_cfg['output_file']
 
     def _setup_boards(self):
@@ -168,18 +175,24 @@ class CalibrationNode(Node):
                 self._last_log_time = now
             return
 
+        if now - self.last_capture_time < self.capture_cooldown_s:
+            return
+
         moved, dt, da = self._movement_from_last(T_cam1_boardA)
         if not moved:
             if now - self._last_log_time > 3.0:
                 self.get_logger().info(
-                    f'Both boards detected, but rig hasn\'t moved enough '
-                    f'(dt={dt:.3f}m, dr={da:.1f}deg). Move the camera rig.'
+                    f'Both boards detected, waiting for more movement '
+                    f'(dt={dt:.3f}m, dr={da:.1f}deg). '
+                    f'Need {self.min_translation_m:.2f}m AND '
+                    f'{self.min_rotation_deg:.0f}deg.'
                 )
                 self._last_log_time = now
             return
 
         self.pose_pairs.append((T_cam1_boardA.copy(), T_cam2_boardB.copy()))
         self.last_accepted_T1 = T_cam1_boardA.copy()
+        self.last_capture_time = now
 
         n = len(self.pose_pairs)
         self.get_logger().info(
@@ -198,7 +211,7 @@ class CalibrationNode(Node):
         dt = np.linalg.norm(T_rel[:3, 3])
         cos_angle = np.clip((np.trace(T_rel[:3, :3]) - 1) / 2, -1.0, 1.0)
         da = np.degrees(np.arccos(cos_angle))
-        moved = dt >= self.min_translation_m or da >= self.min_rotation_deg
+        moved = dt >= self.min_translation_m and da >= self.min_rotation_deg
         return moved, dt, da
 
     @staticmethod

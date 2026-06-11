@@ -17,8 +17,9 @@ board_b:
 
 calibration:
   min_samples: 15
-  min_translation_m: 0.03   # minimum rig movement between poses (meters)
-  min_rotation_deg: 8.0     # minimum rig rotation between poses (degrees)
+  min_translation_m: 0.05    # minimum rig translation between poses (meters)
+  min_rotation_deg: 15.0     # minimum rig rotation between poses (degrees)
+  capture_cooldown_s: 2.0    # seconds to wait between captures (let rig settle)
   camera1_image_topic: /camera1/color/image_raw
   camera1_info_topic:  /camera1/color/camera_info
   camera2_image_topic: /camera2/color/image_raw
