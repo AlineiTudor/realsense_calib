@@ -13,7 +13,7 @@ common_params:
   publish_tf: True
   enable_sync: True
   initial_reset: False
-  rgb_camera.color_profile: '640,480,30'
+  rgb_camera.profile: '640,480,5'
   depth_module.enable_auto_exposure: True
   depth_module.emitter_enabled: 0
 
