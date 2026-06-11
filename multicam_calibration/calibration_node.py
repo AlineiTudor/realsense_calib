@@ -14,7 +14,6 @@ import os
 import cv2
 import numpy as np
 import rclpy
-from cv_bridge import CvBridge
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation
@@ -29,7 +28,6 @@ class CalibrationNode(Node):
         self._declare_params()
         self._load_params()
 
-        self.bridge = CvBridge()
         self.samples = []
 
         self._setup_boards()
@@ -140,8 +138,8 @@ class CalibrationNode(Node):
         if self.cam2_intrinsics is None:
             self.cam2_intrinsics = self._camera_info_to_intrinsics(info2_msg)
 
-        img1 = self.bridge.imgmsg_to_cv2(img1_msg, desired_encoding='bgr8')
-        img2 = self.bridge.imgmsg_to_cv2(img2_msg, desired_encoding='bgr8')
+        img1 = self._imgmsg_to_cv2(img1_msg)
+        img2 = self._imgmsg_to_cv2(img2_msg)
 
         T_cam1_boardA = self._detect_and_solve(
             img1, self.board_a, self.detector_a, self.cam1_intrinsics
@@ -165,6 +163,13 @@ class CalibrationNode(Node):
 
         if n >= self.min_samples:
             self._compute_final_result()
+
+    @staticmethod
+    def _imgmsg_to_cv2(msg):
+        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
+        if msg.encoding == 'rgb8':
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        return img
 
     @staticmethod
     def _camera_info_to_intrinsics(info_msg):
