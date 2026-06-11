@@ -70,39 +70,46 @@ reading correctly):
 
 ### What to measure
 
-For an L-shape where Board B is attached at the bottom edge of Board A,
-forming a 90° angle (Board B extends perpendicular, towards camera2):
+The L-shape has the hinge at the **top** of Board A, with Board B
+extending horizontally from it:
 
 ```
   Side view of L-shape:
 
-       Board A (vertical)
-       |
-       |  ← camera1 sees this face
-       |
-       +------------------
-         Board B (horizontal)
-
-         camera2 sees this face ↑
+       hinge
+       +  -------------------------------- Board B (horizontal)
+        |   camera2 sees this face ↑
+        |
+        |  ← camera1 sees this face
+        |
+        Board A (vertical)
 ```
 
-**translation_y**: Distance from Board A's origin to the hinge line (the
-edge where the two boards meet), measured along Board A's Y axis. For a
-7x5 board with 39.5mm squares, the full board height is 5 × 39.5mm =
-197.5mm. If Board B is flush with Board A's bottom edge, translation_y
-= 0.1975 m. If there's extra spacing, add it.
+The fold runs along Board A's **X axis** (the top edge). This means
+the rotation from Board A's frame to Board B's frame is primarily
+around the X axis.
 
-**translation_x**: Lateral offset between the two board origins, measured
-along Board A's X axis. If both boards are centered on the hinge line,
-this is likely 0. If Board B is shifted left or right, measure the offset.
+**translation_x**: Lateral offset between the two board origins along
+the hinge line. If both boards are aligned (their left edges are flush
+at the hinge), this is 0. If Board B is shifted left/right relative to
+Board A, measure the offset in meters.
 
-**translation_z**: Depth offset from Board A's surface plane to Board B's
-origin. For a simple L-bracket where the hinge is at Board A's bottom
-edge, this is approximately the board thickness (a few mm). Often
-negligible — set to 0 if boards meet at the edge cleanly.
+**translation_y**: Distance from Board A's origin (top-left inner corner
+of the ChArUco pattern) to the hinge line, measured downward. If the
+pattern starts right at the top edge of the physical board and the hinge
+is at that edge, this is ~0. If there is a margin between the pattern
+edge and the hinge, measure it (typically a few mm).
 
-**angle_deg**: The angle between the two board surfaces. Use a digital
-angle gauge placed across both surfaces. Nominally 90°.
+**translation_z**: Depth offset at the hinge (e.g., board thickness if
+the boards don't meet perfectly edge-to-edge). Often negligible — set
+to 0 if the boards join cleanly.
+
+**rotation_rpy**: The rotation from Board A's frame to Board B's frame
+as [roll, pitch, yaw] in radians around Board A's axes. For a 90° fold
+around the X axis (the hinge line), use `[1.5708, 0.0, 0.0]`. Measure
+the actual angle with a digital angle gauge and convert to radians
+(angle_deg × π / 180). If the fold is not exactly 90°, adjust the
+roll value accordingly.
 
 ### Filling in the config
 
@@ -110,18 +117,24 @@ Edit `config/calibration_params.yaml`:
 
 ```yaml
 l_shape:
-  translation_x: 0.0       # lateral offset (meters)
-  translation_y: 0.1975    # distance to hinge along board A's Y (meters)
-  translation_z: 0.0       # depth offset (meters)
-  angle_deg: 90.0          # measured angle between faces
+  translation_x: 0.0                   # lateral offset (meters)
+  translation_y: 0.0                   # origin-to-hinge along Y (meters)
+  translation_z: 0.0                   # depth offset (meters)
+  rotation_rpy: [1.5708, 0.0, 0.0]    # [roll, pitch, yaw] radians
 ```
+
+### Verifying the rotation sign
+
+If you're unsure whether roll should be +90° or -90°, run a quick test:
+collect a few samples and check if the output translation roughly matches
+your expectation from the physical setup. If the signs are flipped, negate
+the roll value (use `-1.5708` instead).
 
 ### Tips for accurate measurement
 - Use calipers rather than a tape measure.
 - Mark the board origin corner on the physical board with a dot.
 - Measure from dot to dot if possible.
-- The angle matters less than the translation for your use case (you said
-  translation is more important).
+- The angle matters less than the translation for your use case.
 - Run the calibration, check the std deviation. If translation std > 5mm,
   re-check your L-shape rigidity and measurements.
 

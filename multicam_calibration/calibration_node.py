@@ -9,7 +9,6 @@ Math:
     T_cam1_cam2 = T_cam1_boardA @ T_boardA_boardB @ inv(T_cam2_boardB)
 """
 
-import math
 import os
 
 import cv2
@@ -65,19 +64,14 @@ class CalibrationNode(Node):
         self.T_boardA_boardB = self._build_l_shape_transform()
 
     def _build_l_shape_transform(self):
-        """Build the 4x4 transform from board_a origin to board_b origin.
-
-        The L-shape angle rotates around the shared edge (board_a's Y axis at
-        the join line). See INSTRUCTIONS.md for the coordinate frame convention
-        and how to measure translation_x/y/z.
-        """
+        """Build the 4x4 transform from board_a origin to board_b origin."""
         cfg = self.l_shape_cfg
         tx = cfg['translation_x']
         ty = cfg['translation_y']
         tz = cfg['translation_z']
-        angle_rad = math.radians(cfg['angle_deg'])
+        rpy = cfg['rotation_rpy']
 
-        R = Rotation.from_euler('y', angle_rad).as_matrix()
+        R = Rotation.from_euler('xyz', rpy).as_matrix()
 
         T = np.eye(4)
         T[:3, :3] = R
