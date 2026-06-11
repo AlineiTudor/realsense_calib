@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-Multi-camera extrinsic calibration using an L-shaped ChArUco target.
+Multi-camera extrinsic calibration via hand-eye (AX=XB) method.
 
-Each camera sees one face of the L-shape. The known geometry of the L-shape
-bridges the two views to compute the camera1-to-camera2 transform.
+Two ChArUco boards are placed in the scene (no rigid attachment needed).
+The camera rig moves to multiple positions while both boards remain visible.
+The solver recovers T_cam1_cam2 with no manual measurements.
 
-Math:
-    T_cam1_cam2 = T_cam1_boardA @ T_boardA_boardB @ inv(T_cam2_boardB)
+Math (for each pair of rig positions i, j):
+    A_ij @ X = X @ B_ij
+where:
+    A_ij = T_cam1_boardA_j @ inv(T_cam1_boardA_i)  (cam1 motion)
+    B_ij = T_cam2_boardB_j @ inv(T_cam2_boardB_i)  (cam2 motion)
+    X    = T_cam1_cam2                               (solved)
 """
 
 import os
@@ -28,23 +33,32 @@ class CalibrationNode(Node):
         self._declare_params()
         self._load_params()
 
-        self.samples = []
+        self.pose_pairs = []
+        self.last_accepted_T1 = None
 
         self._setup_boards()
         self._setup_subscribers()
 
         self.get_logger().info(
-            f'Calibration node ready. Collecting {self.min_samples} samples...'
+            f'Hand-eye calibration ready. Need {self.min_samples} poses '
+            f'from distinct rig positions.'
         )
         self.get_logger().info(
-            'Hold the L-shape so each camera sees its board face.'
+            'Place two ChArUco boards so each camera sees one. '
+            'Move the CAMERA RIG between captures (boards stay still).'
+        )
+        self.get_logger().info(
+            f'Movement threshold: {self.min_translation_m:.3f}m or '
+            f'{self.min_rotation_deg:.1f}deg between poses.'
         )
 
     def _declare_params(self):
         self.declare_parameter('config_file', '')
 
     def _load_params(self):
-        config_file = self.get_parameter('config_file').get_parameter_value().string_value
+        config_file = (
+            self.get_parameter('config_file').get_parameter_value().string_value
+        )
         if not config_file or not os.path.exists(config_file):
             self.get_logger().fatal(f'Config file not found: {config_file}')
             raise SystemExit(1)
@@ -54,27 +68,11 @@ class CalibrationNode(Node):
 
         self.board_a_cfg = cfg['board_a']
         self.board_b_cfg = cfg['board_b']
-        self.l_shape_cfg = cfg['l_shape']
         self.calib_cfg = cfg['calibration']
         self.min_samples = self.calib_cfg['min_samples']
+        self.min_translation_m = self.calib_cfg.get('min_translation_m', 0.03)
+        self.min_rotation_deg = self.calib_cfg.get('min_rotation_deg', 8.0)
         self.output_file = self.calib_cfg['output_file']
-
-        self.T_boardA_boardB = self._build_l_shape_transform()
-
-    def _build_l_shape_transform(self):
-        """Build the 4x4 transform from board_a origin to board_b origin."""
-        cfg = self.l_shape_cfg
-        tx = cfg['translation_x']
-        ty = cfg['translation_y']
-        tz = cfg['translation_z']
-        rpy = cfg['rotation_rpy']
-
-        R = Rotation.from_euler('xyz', rpy).as_matrix()
-
-        T = np.eye(4)
-        T[:3, :3] = R
-        T[:3, 3] = [tx, ty, tz]
-        return T
 
     def _setup_boards(self):
         self.board_a = self._make_charuco_board(self.board_a_cfg)
@@ -90,8 +88,12 @@ class CalibrationNode(Node):
         self.dict_b = cv2.aruco.getPredefinedDictionary(
             getattr(cv2.aruco, self.board_b_cfg['dictionary'])
         )
-        self.detector_a = cv2.aruco.ArucoDetector(self.dict_a, self.detector_params)
-        self.detector_b = cv2.aruco.ArucoDetector(self.dict_b, self.detector_params)
+        self.detector_a = cv2.aruco.ArucoDetector(
+            self.dict_a, self.detector_params
+        )
+        self.detector_b = cv2.aruco.ArucoDetector(
+            self.dict_b, self.detector_params
+        )
 
         self.cam1_intrinsics = None
         self.cam2_intrinsics = None
@@ -132,17 +134,11 @@ class CalibrationNode(Node):
         self._last_log_time = 0.0
 
     def _sync_callback(self, img1_msg, info1_msg, img2_msg, info2_msg):
-        if len(self.samples) >= self.min_samples:
+        if len(self.pose_pairs) >= self.min_samples:
             return
 
         self._frame_count += 1
         now = self.get_clock().now().nanoseconds / 1e9
-        if now - self._last_log_time > 2.0:
-            self.get_logger().info(
-                f'Synced frames received: {self._frame_count}, '
-                f'samples collected: {len(self.samples)}/{self.min_samples}'
-            )
-            self._last_log_time = now
 
         if self.cam1_intrinsics is None:
             self.cam1_intrinsics = self._camera_info_to_intrinsics(info1_msg)
@@ -160,45 +156,56 @@ class CalibrationNode(Node):
         )
 
         if T_cam1_boardA is None or T_cam2_boardB is None:
-            det_a = T_cam1_boardA is not None
-            det_b = T_cam2_boardB is not None
-            if now - self._last_log_time > 1.0:
+            if now - self._last_log_time > 3.0:
+                det_a = T_cam1_boardA is not None
+                det_b = T_cam2_boardB is not None
                 self.get_logger().info(
                     f'Detection — board_a: {"OK" if det_a else "FAIL"}, '
-                    f'board_b: {"OK" if det_b else "FAIL"}'
+                    f'board_b: {"OK" if det_b else "FAIL"}  '
+                    f'(frames: {self._frame_count}, '
+                    f'poses: {len(self.pose_pairs)}/{self.min_samples})'
                 )
+                self._last_log_time = now
             return
 
-        if len(self.samples) == 0:
-            t_a = T_cam1_boardA[:3, 3]
-            r_a = Rotation.from_matrix(T_cam1_boardA[:3, :3]).as_euler('xyz')
-            t_b = T_cam2_boardB[:3, 3]
-            r_b = Rotation.from_matrix(T_cam2_boardB[:3, :3]).as_euler('xyz')
-            self.get_logger().info(f'DEBUG T_cam1_boardA — t: [{t_a[0]:.4f}, {t_a[1]:.4f}, {t_a[2]:.4f}], '
-                                   f'rpy: [{r_a[0]:.4f}, {r_a[1]:.4f}, {r_a[2]:.4f}]')
-            self.get_logger().info(f'DEBUG T_cam2_boardB — t: [{t_b[0]:.4f}, {t_b[1]:.4f}, {t_b[2]:.4f}], '
-                                   f'rpy: [{r_b[0]:.4f}, {r_b[1]:.4f}, {r_b[2]:.4f}]')
-            t_l = self.T_boardA_boardB[:3, 3]
-            r_l = Rotation.from_matrix(self.T_boardA_boardB[:3, :3]).as_euler('xyz')
-            self.get_logger().info(f'DEBUG T_boardA_boardB — t: [{t_l[0]:.4f}, {t_l[1]:.4f}, {t_l[2]:.4f}], '
-                                   f'rpy: [{r_l[0]:.4f}, {r_l[1]:.4f}, {r_l[2]:.4f}]')
+        moved, dt, da = self._movement_from_last(T_cam1_boardA)
+        if not moved:
+            if now - self._last_log_time > 3.0:
+                self.get_logger().info(
+                    f'Both boards detected, but rig hasn\'t moved enough '
+                    f'(dt={dt:.3f}m, dr={da:.1f}deg). Move the camera rig.'
+                )
+                self._last_log_time = now
+            return
 
-        T_cam1_cam2 = T_cam1_boardA @ self.T_boardA_boardB @ np.linalg.inv(T_cam2_boardB)
-        self.samples.append(T_cam1_cam2)
+        self.pose_pairs.append((T_cam1_boardA.copy(), T_cam2_boardB.copy()))
+        self.last_accepted_T1 = T_cam1_boardA.copy()
 
-        n = len(self.samples)
-        t = T_cam1_cam2[:3, 3]
+        n = len(self.pose_pairs)
         self.get_logger().info(
-            f'Sample {n}/{self.min_samples} — '
-            f'translation: [{t[0]:.4f}, {t[1]:.4f}, {t[2]:.4f}]'
+            f'Pose {n}/{self.min_samples} captured '
+            f'(moved {dt:.3f}m, {da:.1f}deg from last)'
         )
 
         if n >= self.min_samples:
-            self._compute_final_result()
+            self._compute_hand_eye()
+
+    def _movement_from_last(self, T_cam1_boardA):
+        if self.last_accepted_T1 is None:
+            return True, 0.0, 0.0
+
+        T_rel = np.linalg.inv(self.last_accepted_T1) @ T_cam1_boardA
+        dt = np.linalg.norm(T_rel[:3, 3])
+        cos_angle = np.clip((np.trace(T_rel[:3, :3]) - 1) / 2, -1.0, 1.0)
+        da = np.degrees(np.arccos(cos_angle))
+        moved = dt >= self.min_translation_m or da >= self.min_rotation_deg
+        return moved, dt, da
 
     @staticmethod
     def _imgmsg_to_cv2(msg):
-        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
+        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+            msg.height, msg.width, -1
+        )
         if msg.encoding == 'rgb8':
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         return img
@@ -217,8 +224,8 @@ class CalibrationNode(Node):
         if ids is None or len(ids) < 4:
             return None
 
-        charuco_retval, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-            corners, ids, gray, board,
+        charuco_retval, charuco_corners, charuco_ids = (
+            cv2.aruco.interpolateCornersCharuco(corners, ids, gray, board)
         )
         if charuco_retval is None or charuco_retval < 6:
             return None
@@ -240,11 +247,7 @@ class CalibrationNode(Node):
 
     @staticmethod
     def _optical_to_link(T_optical):
-        """Convert a transform from optical frame convention to camera_link frame.
-
-        Optical: X right, Y down, Z forward
-        Link:    X forward, Y left, Z up
-        """
+        """Optical (X right, Y down, Z fwd) -> camera_link (X fwd, Y left, Z up)."""
         R_opt_to_link = np.array([
             [0, 0, 1],
             [-1, 0, 0],
@@ -254,85 +257,173 @@ class CalibrationNode(Node):
         T_conv[:3, :3] = R_opt_to_link
         return T_conv @ T_optical @ np.linalg.inv(T_conv)
 
-    def _compute_final_result(self):
-        link_samples = [self._optical_to_link(s) for s in self.samples]
+    def _compute_hand_eye(self):
+        R_gripper2base = []
+        t_gripper2base = []
+        R_target2cam = []
+        t_target2cam = []
 
-        opt_translations = np.array([s[:3, 3] for s in self.samples])
-        opt_rotations = Rotation.from_matrix([s[:3, :3] for s in self.samples])
-        opt_median_t = np.median(opt_translations, axis=0)
-        opt_mean_r = opt_rotations.mean()
-        opt_rpy = opt_mean_r.as_euler('xyz')
+        for T1, T2 in self.pose_pairs:
+            # gripper2base = inv(T_cam1_boardA) = T_boardA_cam1
+            T_g2b = np.linalg.inv(T1)
+            R_gripper2base.append(T_g2b[:3, :3])
+            t_gripper2base.append(T_g2b[:3, 3].reshape(3, 1))
+            # target2cam = T_cam2_boardB (directly from solvePnP)
+            R_target2cam.append(T2[:3, :3])
+            t_target2cam.append(T2[:3, 3].reshape(3, 1))
 
-        translations = np.array([s[:3, 3] for s in link_samples])
-        rotations = Rotation.from_matrix([s[:3, :3] for s in link_samples])
-        median_t = np.median(translations, axis=0)
-        mean_r = rotations.mean()
-        rpy = mean_r.as_euler('xyz')
+        methods = [
+            ('TSAI', cv2.HAND_EYE_TSAI),
+            ('PARK', cv2.HAND_EYE_PARK),
+            ('HORAUD', cv2.HAND_EYE_HORAUD),
+            ('ANDREFF', cv2.HAND_EYE_ANDREFF),
+            ('DANIILIDIS', cv2.HAND_EYE_DANIILIDIS),
+        ]
 
-        std_t = np.std(translations, axis=0)
-        std_r_deg = np.std(
-            [r.as_euler('xyz', degrees=True) for r in rotations], axis=0
-        )
+        results_optical = {}
+        for name, method in methods:
+            try:
+                R, t = cv2.calibrateHandEye(
+                    R_gripper2base, t_gripper2base,
+                    R_target2cam, t_target2cam,
+                    method=method,
+                )
+                T = np.eye(4)
+                T[:3, :3] = R
+                T[:3, 3] = t.flatten()
+                results_optical[name] = T
+            except cv2.error as e:
+                self.get_logger().warn(f'{name} method failed: {e}')
+
+        if not results_optical:
+            self.get_logger().error('All hand-eye methods failed!')
+            return
+
+        results_link = {
+            name: self._optical_to_link(T)
+            for name, T in results_optical.items()
+        }
 
         self.get_logger().info('=' * 60)
-        self.get_logger().info('OPTICAL FRAME result (X right, Y down, Z forward):')
         self.get_logger().info(
-            f'  Translation: [{opt_median_t[0]:.6f}, {opt_median_t[1]:.6f}, {opt_median_t[2]:.6f}]'
+            f'Hand-eye calibration complete ({len(self.pose_pairs)} poses)'
         )
-        self.get_logger().info(
-            f'  Rotation:    [{opt_rpy[0]:.6f}, {opt_rpy[1]:.6f}, {opt_rpy[2]:.6f}]'
-        )
+
         self.get_logger().info('')
-        self.get_logger().info('CAMERA_LINK FRAME result (X forward, Y left, Z up):')
         self.get_logger().info(
-            f'  Translation: [{median_t[0]:.6f}, {median_t[1]:.6f}, {median_t[2]:.6f}]'
+            'OPTICAL FRAME results (X right, Y down, Z forward):'
+        )
+        for name, T in results_optical.items():
+            t = T[:3, 3]
+            rpy = Rotation.from_matrix(T[:3, :3]).as_euler('xyz')
+            self.get_logger().info(
+                f'  {name:12s}  t=[{t[0]:.6f}, {t[1]:.6f}, {t[2]:.6f}]  '
+                f'rpy=[{rpy[0]:.4f}, {rpy[1]:.4f}, {rpy[2]:.4f}]'
+            )
+
+        self.get_logger().info('')
+        self.get_logger().info(
+            'CAMERA_LINK FRAME results (X forward, Y left, Z up):'
+        )
+        for name, T in results_link.items():
+            t = T[:3, 3]
+            rpy = Rotation.from_matrix(T[:3, :3]).as_euler('xyz')
+            self.get_logger().info(
+                f'  {name:12s}  t=[{t[0]:.6f}, {t[1]:.6f}, {t[2]:.6f}]  '
+                f'rpy=[{rpy[0]:.4f}, {rpy[1]:.4f}, {rpy[2]:.4f}]'
+            )
+
+        primary = 'PARK' if 'PARK' in results_link else next(
+            iter(results_link)
+        )
+        T_link = results_link[primary]
+        T_opt = results_optical[primary]
+
+        link_t = T_link[:3, 3]
+        link_r = Rotation.from_matrix(T_link[:3, :3])
+        link_rpy = link_r.as_euler('xyz')
+
+        # Consistency check: T_boardA_boardB should be constant across poses
+        board_transforms = []
+        for T1, T2 in self.pose_pairs:
+            T_a2b = np.linalg.inv(T1) @ T_opt @ T2
+            board_transforms.append(T_a2b)
+        bt_translations = np.array([T[:3, 3] for T in board_transforms])
+        bt_rotations = np.array([
+            Rotation.from_matrix(T[:3, :3]).as_euler('xyz', degrees=True)
+            for T in board_transforms
+        ])
+        bt_std_t = np.std(bt_translations, axis=0)
+        bt_std_r = np.std(bt_rotations, axis=0)
+
+        self.get_logger().info('')
+        self.get_logger().info(f'Primary method: {primary}')
+        self.get_logger().info(
+            f'Consistency check (board-to-board transform std across poses):'
         )
         self.get_logger().info(
-            f'  Rotation:    [{rpy[0]:.6f}, {rpy[1]:.6f}, {rpy[2]:.6f}]'
+            f'  Translation std: [{bt_std_t[0]:.4f}, {bt_std_t[1]:.4f}, '
+            f'{bt_std_t[2]:.4f}] m'
         )
-        self.get_logger().info(f'  Translation std:   [{std_t[0]:.6f}, {std_t[1]:.6f}, {std_t[2]:.6f}]')
-        self.get_logger().info(f'  Rotation std (deg): [{std_r_deg[0]:.4f}, {std_r_deg[1]:.4f}, {std_r_deg[2]:.4f}]')
+        self.get_logger().info(
+            f'  Rotation std:    [{bt_std_r[0]:.2f}, {bt_std_r[1]:.2f}, '
+            f'{bt_std_r[2]:.2f}] deg'
+        )
+
         self.get_logger().info('')
         self.get_logger().info('URDF joint (paste into your xacro):')
         self.get_logger().info(
-            f'  <origin xyz="{median_t[0]:.6f} {median_t[1]:.6f} {median_t[2]:.6f}" '
-            f'rpy="{rpy[0]:.6f} {rpy[1]:.6f} {rpy[2]:.6f}"/>'
+            f'  <origin xyz="{link_t[0]:.6f} {link_t[1]:.6f} '
+            f'{link_t[2]:.6f}" '
+            f'rpy="{link_rpy[0]:.6f} {link_rpy[1]:.6f} '
+            f'{link_rpy[2]:.6f}"/>'
         )
         self.get_logger().info('=' * 60)
 
         result = {
             'transform_camera1_to_camera2': {
+                'frame': 'camera_link',
+                'method': primary,
                 'translation': {
-                    'x': float(median_t[0]),
-                    'y': float(median_t[1]),
-                    'z': float(median_t[2]),
+                    'x': float(link_t[0]),
+                    'y': float(link_t[1]),
+                    'z': float(link_t[2]),
                 },
                 'rotation_rpy': {
-                    'roll': float(rpy[0]),
-                    'pitch': float(rpy[1]),
-                    'yaw': float(rpy[2]),
+                    'roll': float(link_rpy[0]),
+                    'pitch': float(link_rpy[1]),
+                    'yaw': float(link_rpy[2]),
                 },
                 'rotation_quaternion': {
-                    'x': float(mean_r.as_quat()[0]),
-                    'y': float(mean_r.as_quat()[1]),
-                    'z': float(mean_r.as_quat()[2]),
-                    'w': float(mean_r.as_quat()[3]),
+                    'x': float(link_r.as_quat()[0]),
+                    'y': float(link_r.as_quat()[1]),
+                    'z': float(link_r.as_quat()[2]),
+                    'w': float(link_r.as_quat()[3]),
                 },
             },
+            'all_methods': {},
             'statistics': {
-                'num_samples': len(self.samples),
-                'translation_std': {
-                    'x': float(std_t[0]),
-                    'y': float(std_t[1]),
-                    'z': float(std_t[2]),
+                'num_poses': len(self.pose_pairs),
+                'consistency_translation_std': {
+                    'x': float(bt_std_t[0]),
+                    'y': float(bt_std_t[1]),
+                    'z': float(bt_std_t[2]),
                 },
-                'rotation_std_deg': {
-                    'roll': float(std_r_deg[0]),
-                    'pitch': float(std_r_deg[1]),
-                    'yaw': float(std_r_deg[2]),
+                'consistency_rotation_std_deg': {
+                    'roll': float(bt_std_r[0]),
+                    'pitch': float(bt_std_r[1]),
+                    'yaw': float(bt_std_r[2]),
                 },
             },
         }
+
+        for name, T in results_link.items():
+            t_m = T[:3, 3]
+            r_m = Rotation.from_matrix(T[:3, :3]).as_euler('xyz')
+            result['all_methods'][name] = {
+                'translation': [float(t_m[0]), float(t_m[1]), float(t_m[2])],
+                'rotation_rpy': [float(r_m[0]), float(r_m[1]), float(r_m[2])],
+            }
 
         with open(self.output_file, 'w') as f:
             yaml.dump(result, f, default_flow_style=False)

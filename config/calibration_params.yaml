@@ -15,30 +15,10 @@ board_b:
   square_length: 0.0395
   marker_length: 0.030
 
-# L-shape geometry: transform from board_a origin to board_b origin.
-# See INSTRUCTIONS.md for how to measure these values.
-#
-# Setup (side view):
-#
-#       hinge
-#       +  --------- Board B (horizontal)
-#        |   cam2 ↑
-#        |
-#        | ← cam1
-#        |
-#        Board A (vertical)
-#
-# Board A origin is at top-left inner corner (near the hinge).
-# The fold runs along board A's X axis, so rotation is around X.
-l_shape:
-  translation_x: 0.6845    # meters — lateral offset along the hinge line
-  translation_y: -0.00055     # meters — offset along board_a Y (down from origin to hinge)
-  translation_z: -0.4095     # meters — depth offset (board thickness at hinge)
-  rotation_rpy: [0.0, 1.5708, 0.0]   # [roll, pitch, yaw] in radians around board_a axes
-                                       # roll=pi/2 for 90° fold around X axis
-
 calibration:
-  min_samples: 30
+  min_samples: 15
+  min_translation_m: 0.03   # minimum rig movement between poses (meters)
+  min_rotation_deg: 8.0     # minimum rig rotation between poses (degrees)
   camera1_image_topic: /camera1/color/image_raw
   camera1_info_topic:  /camera1/color/camera_info
   camera2_image_topic: /camera2/color/image_raw

@@ -1,13 +1,22 @@
 # Multi-Camera Extrinsic Calibration — Instructions
 
+## Overview
+
+This package calibrates the extrinsic transform between two cameras using the
+**hand-eye (AX=XB)** method. No manual geometry measurements are needed.
+
+You place two ChArUco boards in the scene (they do NOT need to be rigidly
+connected). Each camera sees one board. You move the camera rig to multiple
+positions, and the solver recovers the camera-to-camera transform automatically.
+
 ## 1. Dependencies (install on Jetson)
 
 ```bash
-# ROS2 packages
-sudo apt install ros-${ROS_DISTRO}-cv-bridge ros-${ROS_DISTRO}-image-transport
-
 # Python libraries
-pip3 install opencv-contrib-python numpy scipy transforms3d
+pip3 install opencv-contrib-python numpy scipy pyyaml
+
+# ROS2 packages (should already be available)
+sudo apt install ros-${ROS_DISTRO}-image-transport
 ```
 
 If `opencv-python` is already installed, replace it with `opencv-contrib-python`
@@ -17,126 +26,51 @@ If `opencv-python` is already installed, replace it with `opencv-contrib-python`
 pip3 uninstall opencv-python && pip3 install opencv-contrib-python
 ```
 
-## 2. Build the L-Shaped Target
+## 2. Prepare the ChArUco Boards
 
-### Materials
-- Two printed ChArUco boards (DICT_4X4, 7x5, 39.5mm square, 30mm marker)
-- Two rigid flat surfaces (foam board, MDF, acrylic — anything that stays flat)
-- An aluminum L-bracket or two pieces joined at 90°
-- Glue or double-sided tape
-- A ruler or calipers (mm precision)
-- A digital angle gauge (optional but recommended)
+### Print two boards
 
-### Assembly
-1. Glue each printed ChArUco board onto a rigid flat surface.
-   - Verify the printed square size with a ruler (should be 39.5mm).
-   - The board must be perfectly flat — any warping ruins the calibration.
+Generate printable board images:
 
-2. Attach the two boards to the L-bracket so they form an ~90° angle.
-   - Board A faces camera1 (D455).
-   - Board B faces camera2 (D435i).
-
-3. The boards must be RIGIDLY attached. Any flex between them invalidates
-   the calibration.
-
-## 3. Measure the L-Shape Geometry
-
-This is the most critical step. You need to measure the 3D transform from
-board A's origin to board B's origin.
-
-### Coordinate frame convention
-
-Each ChArUco board's coordinate frame origin is at its **first chessboard
-corner** (top-left inner corner when the board is oriented with markers
-reading correctly):
-
-```
-  Board A (face up, markers readable)
-
-  +------+------+------+------+------+------+------+
-  |      |      |      |      |      |      |      |
-  | [AR] |      | [AR] |      | [AR] |      | [AR] |
-  |      |      |      |      |      |      |      |
-  O----->+------+------+------+------+------+------+   O = origin
-  |  X   |      |      |      |      |      |      |
-  | axis | [AR] |      | [AR] |      | [AR] |      |
-  |      |      |      |      |      |      |      |
-  +------+------+------+------+------+------+------+
-  |      ...
-  Y axis (downward)
-
-  Z axis = into the board surface (right-hand rule)
+```bash
+python3 -m multicam_calibration.generate_boards --output_dir /tmp/boards
 ```
 
-### What to measure
+Or use your existing boards. The default config expects:
+- **DICT_4X4_50**, 7x5 squares, 39.5mm square, 30mm marker
 
-The L-shape has the hinge at the **top** of Board A, with Board B
-extending horizontally from it:
+### Mount on rigid surfaces
+
+Glue each board onto a rigid flat surface (foam board, MDF, acrylic). The
+board must be perfectly flat — any warping degrades accuracy.
+
+Verify the printed square size with a ruler (should be 39.5mm). Adjust the
+`square_length` in `config/calibration_params.yaml` if it differs.
+
+## 3. Set Up the Scene
 
 ```
-  Side view of L-shape:
+                Board A                       Board B
+              (stationary)                  (stationary)
+            +-----------+                 +-----------+
+            |           |                 |           |
+            |  ChArUco  |                 |  ChArUco  |
+            |           |                 |           |
+            +-----------+                 +-----------+
 
-       hinge
-       +  -------------------------------- Board B (horizontal)
-        |   camera2 sees this face ↑
-        |
-        |  ← camera1 sees this face
-        |
-        Board A (vertical)
+                 ^                              ^
+                 |                              |
+              camera1                        camera2
+              (D435i)                        (D455)
+               \____________________________/
+                     Camera rig (moves)
 ```
 
-The fold runs along Board A's **X axis** (the top edge). This means
-the rotation from Board A's frame to Board B's frame is primarily
-around the X axis.
-
-**translation_x**: Lateral offset between the two board origins along
-the hinge line. If both boards are aligned (their left edges are flush
-at the hinge), this is 0. If Board B is shifted left/right relative to
-Board A, measure the offset in meters.
-
-**translation_y**: Distance from Board A's origin (top-left inner corner
-of the ChArUco pattern) to the hinge line, measured downward. If the
-pattern starts right at the top edge of the physical board and the hinge
-is at that edge, this is ~0. If there is a margin between the pattern
-edge and the hinge, measure it (typically a few mm).
-
-**translation_z**: Depth offset at the hinge (e.g., board thickness if
-the boards don't meet perfectly edge-to-edge). Often negligible — set
-to 0 if the boards join cleanly.
-
-**rotation_rpy**: The rotation from Board A's frame to Board B's frame
-as [roll, pitch, yaw] in radians around Board A's axes. For a 90° fold
-around the X axis (the hinge line), use `[1.5708, 0.0, 0.0]`. Measure
-the actual angle with a digital angle gauge and convert to radians
-(angle_deg × π / 180). If the fold is not exactly 90°, adjust the
-roll value accordingly.
-
-### Filling in the config
-
-Edit `config/calibration_params.yaml`:
-
-```yaml
-l_shape:
-  translation_x: 0.0                   # lateral offset (meters)
-  translation_y: 0.0                   # origin-to-hinge along Y (meters)
-  translation_z: 0.0                   # depth offset (meters)
-  rotation_rpy: [1.5708, 0.0, 0.0]    # [roll, pitch, yaw] radians
-```
-
-### Verifying the rotation sign
-
-If you're unsure whether roll should be +90° or -90°, run a quick test:
-collect a few samples and check if the output translation roughly matches
-your expectation from the physical setup. If the signs are flipped, negate
-the roll value (use `-1.5708` instead).
-
-### Tips for accurate measurement
-- Use calipers rather than a tape measure.
-- Mark the board origin corner on the physical board with a dot.
-- Measure from dot to dot if possible.
-- The angle matters less than the translation for your use case.
-- Run the calibration, check the std deviation. If translation std > 5mm,
-  re-check your L-shape rigidity and measurements.
+- Place board A where **camera1** can see it clearly.
+- Place board B where **camera2** can see it clearly.
+- The boards must be **stationary** throughout the calibration.
+- The boards do NOT need to be attached to each other.
+- The boards can be at any distance and any angle relative to each other.
 
 ## 4. Build and Run
 
@@ -148,28 +82,61 @@ source install/setup.bash
 ros2 launch multicam_calibration calibration.launch.py
 ```
 
-Hold the L-shape target so:
-- Camera1 (D455) sees Board A clearly
-- Camera2 (D435i) sees Board B clearly
-- Both boards are fully visible (no partial occlusion)
-- Move the target to slightly different positions/angles between samples
-  for better averaging
+### During calibration
 
-The node logs each sample's translation. After collecting the configured
-number of samples (default: 30), it prints the final result:
+1. Position the camera rig so both cameras see their respective boards.
+2. Hold still for a moment — the node captures the pose pair automatically.
+3. **Move the camera rig** to a new position (translate and/or rotate it).
+   - The node requires at least 3cm translation or 8deg rotation between poses.
+   - More diverse positions = better result.
+4. Repeat until the required number of poses is collected (default: 15).
+5. The node automatically computes the result and prints it.
+
+### Tips for good calibration
+
+- **Vary both translation and rotation** between poses. Don't just slide
+  the rig sideways — tilt it, rotate it, move it closer/farther.
+- Keep both boards fully visible at each position (no partial occlusion).
+- Avoid extreme viewing angles (board nearly edge-on to camera).
+- 15 poses is the minimum for decent results. For high-precision work,
+  increase `min_samples` to 25-30 in the config.
+- The boards should be well-lit with even lighting (avoid strong shadows
+  or glare on the boards).
+
+## 5. Output
+
+The node prints results from five different solver methods (TSAI, PARK,
+HORAUD, ANDREFF, DANIILIDIS) so you can compare. If they converge to
+similar values, the calibration is reliable.
+
+Example output:
 
 ```
-CALIBRATION RESULT (camera1 -> camera2)
-Translation (xyz): [x, y, z]
-Rotation    (rpy): [roll, pitch, yaw]
+CAMERA_LINK FRAME results (X forward, Y left, Z up):
+  TSAI          t=[-0.098012, -0.031845, 0.000312]  rpy=[0.0012, -0.0008, -1.5709]
+  PARK          t=[-0.097998, -0.032001, 0.000298]  rpy=[0.0010, -0.0006, -1.5710]
+  HORAUD        t=[-0.098105, -0.031912, 0.000356]  rpy=[0.0014, -0.0009, -1.5707]
+  ...
 
 URDF joint (paste into your xacro):
-  <origin xyz="..." rpy="..."/>
+  <origin xyz="-0.097998 -0.032001 0.000298" rpy="0.001000 -0.000600 -1.571000"/>
 ```
 
-The result is also saved to `/tmp/calibration_result.yaml`.
+The result is also saved to `/tmp/calibration_result.yaml` (or the path
+configured in `output_file`).
 
-## 5. Apply the Result
+### Consistency check
+
+The node reports a "board-to-board transform std" — this measures how
+consistent the recovered geometry is across all captured poses. Lower is
+better:
+
+- **Translation std < 3mm**: Excellent calibration.
+- **Translation std 3-10mm**: Acceptable, consider more poses.
+- **Translation std > 10mm**: Poor — check board flatness, lighting, and
+  that the boards didn't move during calibration.
+
+## 6. Apply the Result
 
 Paste the URDF `<origin>` line into your camera2 joint in
 `ad_r1m_perception_cuvslam/urdf/realsense_calibration.urdf.xacro`:
@@ -182,11 +149,26 @@ Paste the URDF `<origin>` line into your camera2 joint in
 </joint>
 ```
 
-## 6. Quality Checks
+After applying, run cuVSLAM and check for visual discontinuities at the
+camera boundary.
 
-- **Translation std < 3mm**: Good calibration.
-- **Translation std 3-10mm**: Acceptable, but check board rigidity.
-- **Translation std > 10mm**: Problem — board flexing, bad detection, or
-  wrong L-shape measurements. Fix and re-run.
-- After applying the result, run cuVSLAM and check for visual
-  discontinuities at the camera boundary.
+## 7. Config Reference
+
+### `config/calibration_params.yaml`
+
+| Parameter | Description |
+|-----------|-------------|
+| `board_a.dictionary` | ArUco dictionary (e.g., `DICT_4X4_50`) |
+| `board_a.squares_x/y` | Board grid dimensions |
+| `board_a.square_length` | Square side length in meters |
+| `board_a.marker_length` | Marker side length in meters |
+| `calibration.min_samples` | Number of rig positions to collect |
+| `calibration.min_translation_m` | Min translation between poses (m) |
+| `calibration.min_rotation_deg` | Min rotation between poses (deg) |
+| `calibration.camera*_topic` | ROS topic names for images/info |
+| `calibration.output_file` | Path to save YAML result |
+
+### `config/realsense_calibration.yaml`
+
+Camera configuration for the RealSense nodes. Adjust serial numbers and
+profiles to match your hardware.
