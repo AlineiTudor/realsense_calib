@@ -13,15 +13,15 @@ common_params:
   publish_tf: True
   enable_sync: True
   initial_reset: False
-  rgb_camera.profile: '640,480,5'
+  rgb_camera.profile: '1280,800,15'
   depth_module.enable_auto_exposure: True
   depth_module.emitter_enabled: 0
 
 cameras:
-  - camera_name: camera1
-    serial_no: '234222300435'    # D455
-    depth_module.inter_cam_sync_mode: 1
-
   - camera_name: camera2
+    serial_no: '234222300435'    # D455
+    depth_module.inter_cam_sync_mode: 0
+
+  - camera_name: camera1
     serial_no: '243322074768'    # D435i
-    depth_module.inter_cam_sync_mode: 2
+    depth_module.inter_cam_sync_mode: 0

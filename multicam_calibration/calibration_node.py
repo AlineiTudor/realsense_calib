@@ -238,10 +238,33 @@ class CalibrationNode(Node):
         T[:3, 3] = tvec.flatten()
         return T
 
-    def _compute_final_result(self):
-        translations = np.array([s[:3, 3] for s in self.samples])
-        rotations = Rotation.from_matrix([s[:3, :3] for s in self.samples])
+    @staticmethod
+    def _optical_to_link(T_optical):
+        """Convert a transform from optical frame convention to camera_link frame.
 
+        Optical: X right, Y down, Z forward
+        Link:    X forward, Y left, Z up
+        """
+        R_opt_to_link = np.array([
+            [0, 0, 1],
+            [-1, 0, 0],
+            [0, -1, 0],
+        ], dtype=float)
+        T_conv = np.eye(4)
+        T_conv[:3, :3] = R_opt_to_link
+        return T_conv @ T_optical @ np.linalg.inv(T_conv)
+
+    def _compute_final_result(self):
+        link_samples = [self._optical_to_link(s) for s in self.samples]
+
+        opt_translations = np.array([s[:3, 3] for s in self.samples])
+        opt_rotations = Rotation.from_matrix([s[:3, :3] for s in self.samples])
+        opt_median_t = np.median(opt_translations, axis=0)
+        opt_mean_r = opt_rotations.mean()
+        opt_rpy = opt_mean_r.as_euler('xyz')
+
+        translations = np.array([s[:3, 3] for s in link_samples])
+        rotations = Rotation.from_matrix([s[:3, :3] for s in link_samples])
         median_t = np.median(translations, axis=0)
         mean_r = rotations.mean()
         rpy = mean_r.as_euler('xyz')
@@ -252,16 +275,23 @@ class CalibrationNode(Node):
         )
 
         self.get_logger().info('=' * 60)
-        self.get_logger().info('CALIBRATION RESULT (camera1 -> camera2)')
-        self.get_logger().info('=' * 60)
+        self.get_logger().info('OPTICAL FRAME result (X right, Y down, Z forward):')
         self.get_logger().info(
-            f'Translation (xyz): [{median_t[0]:.6f}, {median_t[1]:.6f}, {median_t[2]:.6f}]'
+            f'  Translation: [{opt_median_t[0]:.6f}, {opt_median_t[1]:.6f}, {opt_median_t[2]:.6f}]'
         )
         self.get_logger().info(
-            f'Rotation    (rpy): [{rpy[0]:.6f}, {rpy[1]:.6f}, {rpy[2]:.6f}]'
+            f'  Rotation:    [{opt_rpy[0]:.6f}, {opt_rpy[1]:.6f}, {opt_rpy[2]:.6f}]'
         )
-        self.get_logger().info(f'Translation std:   [{std_t[0]:.6f}, {std_t[1]:.6f}, {std_t[2]:.6f}]')
-        self.get_logger().info(f'Rotation std (deg): [{std_r_deg[0]:.4f}, {std_r_deg[1]:.4f}, {std_r_deg[2]:.4f}]')
+        self.get_logger().info('')
+        self.get_logger().info('CAMERA_LINK FRAME result (X forward, Y left, Z up):')
+        self.get_logger().info(
+            f'  Translation: [{median_t[0]:.6f}, {median_t[1]:.6f}, {median_t[2]:.6f}]'
+        )
+        self.get_logger().info(
+            f'  Rotation:    [{rpy[0]:.6f}, {rpy[1]:.6f}, {rpy[2]:.6f}]'
+        )
+        self.get_logger().info(f'  Translation std:   [{std_t[0]:.6f}, {std_t[1]:.6f}, {std_t[2]:.6f}]')
+        self.get_logger().info(f'  Rotation std (deg): [{std_r_deg[0]:.4f}, {std_r_deg[1]:.4f}, {std_r_deg[2]:.4f}]')
         self.get_logger().info('')
         self.get_logger().info('URDF joint (paste into your xacro):')
         self.get_logger().info(

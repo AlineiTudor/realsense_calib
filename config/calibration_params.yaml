@@ -31,10 +31,10 @@ board_b:
 # Board A origin is at top-left inner corner (near the hinge).
 # The fold runs along board A's X axis, so rotation is around X.
 l_shape:
-  translation_x: 0.0     # meters — lateral offset along the hinge line
-  translation_y: 0.0     # meters — offset along board_a Y (down from origin to hinge)
-  translation_z: 0.0     # meters — depth offset (board thickness at hinge)
-  rotation_rpy: [1.5708, 0.0, 0.0]   # [roll, pitch, yaw] in radians around board_a axes
+  translation_x: 0.6845    # meters — lateral offset along the hinge line
+  translation_y: -0.00055     # meters — offset along board_a Y (down from origin to hinge)
+  translation_z: -0.4095     # meters — depth offset (board thickness at hinge)
+  rotation_rpy: [0.0, 1.5708, 0.0]   # [roll, pitch, yaw] in radians around board_a axes
                                        # roll=pi/2 for 90° fold around X axis
 
 calibration:
