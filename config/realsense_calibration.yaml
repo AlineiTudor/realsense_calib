@@ -1,0 +1,27 @@
+%YAML 1.2
+---
+
+common_params:
+  enable_infra1: False
+  enable_infra2: False
+  enable_color: True
+  enable_depth: False
+  enable_rgbd: False
+  enable_gyro: False
+  enable_accel: False
+  pointcloud.enable: False
+  publish_tf: True
+  enable_sync: True
+  initial_reset: False
+  rgb_camera.color_profile: '640,480,30'
+  depth_module.enable_auto_exposure: True
+  depth_module.emitter_enabled: 0
+
+cameras:
+  - camera_name: camera1
+    serial_no: '234222300435'    # D455
+    depth_module.inter_cam_sync_mode: 1
+
+  - camera_name: camera2
+    serial_no: '243322074768'    # D435i
+    depth_module.inter_cam_sync_mode: 2

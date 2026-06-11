@@ -1,0 +1,32 @@
+%YAML 1.2
+---
+
+board_a:
+  dictionary: DICT_4X4_50
+  squares_x: 7
+  squares_y: 5
+  square_length: 0.0395   # meters (39.5mm)
+  marker_length: 0.030    # meters (30mm)
+
+board_b:
+  dictionary: DICT_4X4_50
+  squares_x: 7
+  squares_y: 5
+  square_length: 0.0395
+  marker_length: 0.030
+
+# L-shape geometry: transform from board_a origin to board_b origin.
+# See INSTRUCTIONS.md for how to measure these values.
+l_shape:
+  translation_x: 0.0     # meters — along board_a's X axis (rightward)
+  translation_y: 0.28     # meters — along board_a's Y axis (downward)
+  translation_z: 0.0     # meters — along board_a's Z axis (into the board)
+  angle_deg: 90.0         # angle between board faces (measure with angle gauge)
+
+calibration:
+  min_samples: 30
+  camera1_image_topic: /camera1/color/image_raw
+  camera1_info_topic:  /camera1/color/camera_info
+  camera2_image_topic: /camera2/color/image_raw
+  camera2_info_topic:  /camera2/color/camera_info
+  output_file: /tmp/calibration_result.yaml
