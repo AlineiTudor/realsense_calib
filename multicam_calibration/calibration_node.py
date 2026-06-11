@@ -273,11 +273,11 @@ class CalibrationNode(Node):
             t_target2cam.append(T2[:3, 3].reshape(3, 1))
 
         methods = [
-            ('TSAI', cv2.HAND_EYE_TSAI),
-            ('PARK', cv2.HAND_EYE_PARK),
-            ('HORAUD', cv2.HAND_EYE_HORAUD),
-            ('ANDREFF', cv2.HAND_EYE_ANDREFF),
-            ('DANIILIDIS', cv2.HAND_EYE_DANIILIDIS),
+            ('TSAI', cv2.CALIB_HAND_EYE_TSAI),
+            ('PARK', cv2.CALIB_HAND_EYE_PARK),
+            ('HORAUD', cv2.CALIB_HAND_EYE_HORAUD),
+            ('ANDREFF', cv2.CALIB_HAND_EYE_ANDREFF),
+            ('DANIILIDIS', cv2.CALIB_HAND_EYE_DANIILIDIS),
         ]
 
         results_optical = {}
