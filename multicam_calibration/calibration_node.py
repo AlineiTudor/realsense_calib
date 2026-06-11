@@ -125,13 +125,24 @@ class CalibrationNode(Node):
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_img1, self.sub_info1, self.sub_img2, self.sub_info2],
             queue_size=10,
-            slop=0.05,
+            slop=0.1,
         )
         self.sync.registerCallback(self._sync_callback)
+        self._frame_count = 0
+        self._last_log_time = 0.0
 
     def _sync_callback(self, img1_msg, info1_msg, img2_msg, info2_msg):
         if len(self.samples) >= self.min_samples:
             return
+
+        self._frame_count += 1
+        now = self.get_clock().now().nanoseconds / 1e9
+        if now - self._last_log_time > 2.0:
+            self.get_logger().info(
+                f'Synced frames received: {self._frame_count}, '
+                f'samples collected: {len(self.samples)}/{self.min_samples}'
+            )
+            self._last_log_time = now
 
         if self.cam1_intrinsics is None:
             self.cam1_intrinsics = self._camera_info_to_intrinsics(info1_msg)
@@ -149,6 +160,13 @@ class CalibrationNode(Node):
         )
 
         if T_cam1_boardA is None or T_cam2_boardB is None:
+            det_a = T_cam1_boardA is not None
+            det_b = T_cam2_boardB is not None
+            if now - self._last_log_time > 1.0:
+                self.get_logger().info(
+                    f'Detection — board_a: {"OK" if det_a else "FAIL"}, '
+                    f'board_b: {"OK" if det_b else "FAIL"}'
+                )
             return
 
         T_cam1_cam2 = T_cam1_boardA @ self.T_boardA_boardB @ np.linalg.inv(T_cam2_boardB)
