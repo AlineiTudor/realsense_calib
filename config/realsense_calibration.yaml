@@ -2,9 +2,13 @@
 ---
 
 common_params:
-  enable_infra1: False
+  # --- Stream selection ---
+  # For infra (recommended — lighter on CPU, no debayering):
+  enable_infra1: True
   enable_infra2: False
-  enable_color: True
+  enable_color: False
+  # For RGB instead: set enable_infra1: False, enable_color: True
+
   enable_depth: False
   enable_rgbd: False
   enable_gyro: False
@@ -13,9 +17,13 @@ common_params:
   publish_tf: True
   enable_sync: True
   initial_reset: False
-  rgb_camera.profile: '1280,800,15'
+
+  # --- Stream profiles ---
+  depth_module.infra_profile: '640,480,15'
+  rgb_camera.profile: '640,480,15'
+
   depth_module.enable_auto_exposure: True
-  depth_module.emitter_enabled: 0
+  depth_module.emitter_enabled: 0    # must be off for ChArUco detection on infra
 
 cameras:
   - camera_name: camera2

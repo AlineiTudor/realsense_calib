@@ -20,8 +20,18 @@ calibration:
   min_translation_m: 0.05    # minimum rig translation between poses (meters)
   min_rotation_deg: 15.0     # minimum rig rotation between poses (degrees)
   capture_cooldown_s: 2.0    # seconds to wait between captures (let rig settle)
-  camera1_image_topic: /camera1/color/image_raw
-  camera1_info_topic:  /camera1/color/camera_info
-  camera2_image_topic: /camera2/color/image_raw
-  camera2_info_topic:  /camera2/color/camera_info
+  process_rate_hz: 2.0       # how often to process frames (Hz)
+
+  # --- Infra topics (default) ---
+  camera1_image_topic: /camera1/infra1/image_rect_raw
+  camera1_info_topic:  /camera1/infra1/camera_info
+  camera2_image_topic: /camera2/infra1/image_rect_raw
+  camera2_info_topic:  /camera2/infra1/camera_info
+
+  # --- RGB topics (uncomment and swap if using color streams) ---
+  # camera1_image_topic: /camera1/color/image_raw
+  # camera1_info_topic:  /camera1/color/camera_info
+  # camera2_image_topic: /camera2/color/image_raw
+  # camera2_info_topic:  /camera2/color/camera_info
+
   output_file: /tmp/calibration_result.yaml

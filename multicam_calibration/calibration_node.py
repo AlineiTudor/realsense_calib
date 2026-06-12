@@ -251,12 +251,17 @@ class CalibrationNode(Node):
 
     @staticmethod
     def _imgmsg_to_cv2(msg):
-        if msg.encoding in ('mono8', 'mono16', '8UC1'):
-            channels = 1
-        else:
-            channels = -1
+        if msg.encoding in ('mono8', '8UC1'):
+            return np.frombuffer(msg.data, dtype=np.uint8).reshape(
+                msg.height, msg.width
+            )
+        if msg.encoding == 'mono16':
+            img16 = np.frombuffer(msg.data, dtype=np.uint16).reshape(
+                msg.height, msg.width
+            )
+            return (img16 >> 8).astype(np.uint8)
         img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
-            msg.height, msg.width, channels
+            msg.height, msg.width, -1
         )
         if msg.encoding == 'rgb8':
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
