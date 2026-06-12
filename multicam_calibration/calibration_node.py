@@ -15,6 +15,7 @@ where:
 """
 
 import os
+import threading
 
 import cv2
 import numpy as np
@@ -36,6 +37,8 @@ class CalibrationNode(Node):
         self.pose_pairs = []
         self.last_accepted_T1 = None
         self.last_capture_time = 0.0
+        self._processing_lock = threading.Lock()
+        self._last_process_time = 0.0
 
         self._setup_boards()
         self._setup_subscribers()
@@ -133,7 +136,7 @@ class CalibrationNode(Node):
 
         self.sync = ApproximateTimeSynchronizer(
             [self.sub_img1, self.sub_info1, self.sub_img2, self.sub_info2],
-            queue_size=10,
+            queue_size=2,
             slop=0.1,
         )
         self.sync.registerCallback(self._sync_callback)
@@ -144,64 +147,76 @@ class CalibrationNode(Node):
         if len(self.pose_pairs) >= self.min_samples:
             return
 
-        self._frame_count += 1
-        now = self.get_clock().now().nanoseconds / 1e9
-
-        if self.cam1_intrinsics is None:
-            self.cam1_intrinsics = self._camera_info_to_intrinsics(info1_msg)
-        if self.cam2_intrinsics is None:
-            self.cam2_intrinsics = self._camera_info_to_intrinsics(info2_msg)
-
-        img1 = self._imgmsg_to_cv2(img1_msg)
-        img2 = self._imgmsg_to_cv2(img2_msg)
-
-        T_cam1_boardA = self._detect_and_solve(
-            img1, self.board_a, self.detector_a, self.cam1_intrinsics
-        )
-        T_cam2_boardB = self._detect_and_solve(
-            img2, self.board_b, self.detector_b, self.cam2_intrinsics
-        )
-
-        if T_cam1_boardA is None or T_cam2_boardB is None:
-            if now - self._last_log_time > 3.0:
-                det_a = T_cam1_boardA is not None
-                det_b = T_cam2_boardB is not None
-                self.get_logger().info(
-                    f'Detection — board_a: {"OK" if det_a else "FAIL"}, '
-                    f'board_b: {"OK" if det_b else "FAIL"}  '
-                    f'(frames: {self._frame_count}, '
-                    f'poses: {len(self.pose_pairs)}/{self.min_samples})'
-                )
-                self._last_log_time = now
+        # Discard frame if previous one is still being processed
+        if not self._processing_lock.acquire(blocking=False):
             return
 
-        if now - self.last_capture_time < self.capture_cooldown_s:
-            return
+        try:
+            self._frame_count += 1
+            now = self.get_clock().now().nanoseconds / 1e9
 
-        moved, dt, da = self._movement_from_last(T_cam1_boardA)
-        if not moved:
-            if now - self._last_log_time > 3.0:
-                self.get_logger().info(
-                    f'Both boards detected, waiting for more movement '
-                    f'(dt={dt:.3f}m, dr={da:.1f}deg). '
-                    f'Need {self.min_translation_m:.2f}m AND '
-                    f'{self.min_rotation_deg:.0f}deg.'
-                )
-                self._last_log_time = now
-            return
+            # Rate-limit: process at most ~2 fps to avoid CPU saturation
+            if now - self._last_process_time < 0.5:
+                return
+            self._last_process_time = now
 
-        self.pose_pairs.append((T_cam1_boardA.copy(), T_cam2_boardB.copy()))
-        self.last_accepted_T1 = T_cam1_boardA.copy()
-        self.last_capture_time = now
+            if self.cam1_intrinsics is None:
+                self.cam1_intrinsics = self._camera_info_to_intrinsics(info1_msg)
+            if self.cam2_intrinsics is None:
+                self.cam2_intrinsics = self._camera_info_to_intrinsics(info2_msg)
 
-        n = len(self.pose_pairs)
-        self.get_logger().info(
-            f'Pose {n}/{self.min_samples} captured '
-            f'(moved {dt:.3f}m, {da:.1f}deg from last)'
-        )
+            img1 = self._imgmsg_to_cv2(img1_msg)
+            img2 = self._imgmsg_to_cv2(img2_msg)
 
-        if n >= self.min_samples:
-            self._compute_hand_eye()
+            T_cam1_boardA = self._detect_and_solve(
+                img1, self.board_a, self.detector_a, self.cam1_intrinsics
+            )
+            T_cam2_boardB = self._detect_and_solve(
+                img2, self.board_b, self.detector_b, self.cam2_intrinsics
+            )
+
+            if T_cam1_boardA is None or T_cam2_boardB is None:
+                if now - self._last_log_time > 3.0:
+                    det_a = T_cam1_boardA is not None
+                    det_b = T_cam2_boardB is not None
+                    self.get_logger().info(
+                        f'Detection — board_a: {"OK" if det_a else "FAIL"}, '
+                        f'board_b: {"OK" if det_b else "FAIL"}  '
+                        f'(frames: {self._frame_count}, '
+                        f'poses: {len(self.pose_pairs)}/{self.min_samples})'
+                    )
+                    self._last_log_time = now
+                return
+
+            if now - self.last_capture_time < self.capture_cooldown_s:
+                return
+
+            moved, dt, da = self._movement_from_last(T_cam1_boardA)
+            if not moved:
+                if now - self._last_log_time > 3.0:
+                    self.get_logger().info(
+                        f'Both boards detected, waiting for more movement '
+                        f'(dt={dt:.3f}m, dr={da:.1f}deg). '
+                        f'Need {self.min_translation_m:.2f}m AND '
+                        f'{self.min_rotation_deg:.0f}deg.'
+                    )
+                    self._last_log_time = now
+                return
+
+            self.pose_pairs.append((T_cam1_boardA.copy(), T_cam2_boardB.copy()))
+            self.last_accepted_T1 = T_cam1_boardA.copy()
+            self.last_capture_time = now
+
+            n = len(self.pose_pairs)
+            self.get_logger().info(
+                f'Pose {n}/{self.min_samples} captured '
+                f'(moved {dt:.3f}m, {da:.1f}deg from last)'
+            )
+
+            if n >= self.min_samples:
+                self._compute_hand_eye()
+        finally:
+            self._processing_lock.release()
 
     def _movement_from_last(self, T_cam1_boardA):
         if self.last_accepted_T1 is None:
