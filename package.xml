@@ -3,7 +3,7 @@
 <package format="3">
   <name>multicam_calibration</name>
   <version>0.1.0</version>
-  <description>Multi-camera extrinsic calibration using L-shaped ChArUco target</description>
+  <description>Multi-camera extrinsic calibration using hand-eye (AX=XB) method</description>
   <maintainer email="tudor.alinei-poiana@analog.com">Tudor Alinei-Poiana</maintainer>
   <license>Apache-2.0</license>
 
@@ -11,7 +11,6 @@
 
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
-  <depend>message_filters</depend>
 
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>

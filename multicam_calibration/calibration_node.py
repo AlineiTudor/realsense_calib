@@ -15,13 +15,12 @@ where:
 """
 
 import os
-import threading
 
 import cv2
 import numpy as np
 import rclpy
-from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
+from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image
 import yaml
@@ -37,11 +36,18 @@ class CalibrationNode(Node):
         self.pose_pairs = []
         self.last_accepted_T1 = None
         self.last_capture_time = 0.0
-        self._processing_lock = threading.Lock()
-        self._last_process_time = 0.0
 
         self._setup_boards()
+
+        self.cam1_intrinsics = None
+        self.cam2_intrinsics = None
+        self._latest_img1 = None
+        self._latest_img2 = None
+
         self._setup_subscribers()
+
+        process_rate = self.calib_cfg.get('process_rate_hz', 2.0)
+        self._timer = self.create_timer(1.0 / process_rate, self._process_latest)
 
         self.get_logger().info(
             f'Hand-eye calibration ready. Need {self.min_samples} poses '
@@ -105,9 +111,6 @@ class CalibrationNode(Node):
             self.dict_b, self.detector_params
         )
 
-        self.cam1_intrinsics = None
-        self.cam2_intrinsics = None
-
     @staticmethod
     def _make_charuco_board(cfg):
         aruco_dict = cv2.aruco.getPredefinedDictionary(
@@ -121,102 +124,119 @@ class CalibrationNode(Node):
         )
 
     def _setup_subscribers(self):
-        self.sub_img1 = Subscriber(
-            self, Image, self.calib_cfg['camera1_image_topic']
-        )
-        self.sub_info1 = Subscriber(
-            self, CameraInfo, self.calib_cfg['camera1_info_topic']
-        )
-        self.sub_img2 = Subscriber(
-            self, Image, self.calib_cfg['camera2_image_topic']
-        )
-        self.sub_info2 = Subscriber(
-            self, CameraInfo, self.calib_cfg['camera2_info_topic']
+        # BEST_EFFORT + depth=1: DDS drops frames the subscriber can't
+        # consume, instead of buffering and serializing every one.
+        sensor_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
         )
 
-        self.sync = ApproximateTimeSynchronizer(
-            [self.sub_img1, self.sub_info1, self.sub_img2, self.sub_info2],
-            queue_size=2,
-            slop=0.1,
+        self.create_subscription(
+            Image, self.calib_cfg['camera1_image_topic'],
+            self._img1_cb, sensor_qos,
         )
-        self.sync.registerCallback(self._sync_callback)
-        self._frame_count = 0
-        self._last_log_time = 0.0
+        self.create_subscription(
+            Image, self.calib_cfg['camera2_image_topic'],
+            self._img2_cb, sensor_qos,
+        )
+        self.create_subscription(
+            CameraInfo, self.calib_cfg['camera1_info_topic'],
+            self._info1_cb, 10,
+        )
+        self.create_subscription(
+            CameraInfo, self.calib_cfg['camera2_info_topic'],
+            self._info2_cb, 10,
+        )
 
-    def _sync_callback(self, img1_msg, info1_msg, img2_msg, info2_msg):
+    def _img1_cb(self, msg):
+        self._latest_img1 = msg
+
+    def _img2_cb(self, msg):
+        self._latest_img2 = msg
+
+    def _info1_cb(self, msg):
+        if self.cam1_intrinsics is None:
+            self.cam1_intrinsics = self._camera_info_to_intrinsics(msg)
+
+    def _info2_cb(self, msg):
+        if self.cam2_intrinsics is None:
+            self.cam2_intrinsics = self._camera_info_to_intrinsics(msg)
+
+    def _process_latest(self):
         if len(self.pose_pairs) >= self.min_samples:
             return
 
-        # Discard frame if previous one is still being processed
-        if not self._processing_lock.acquire(blocking=False):
+        img1_msg = self._latest_img1
+        img2_msg = self._latest_img2
+
+        if img1_msg is None or img2_msg is None:
             return
 
-        try:
-            self._frame_count += 1
-            now = self.get_clock().now().nanoseconds / 1e9
+        if self.cam1_intrinsics is None or self.cam2_intrinsics is None:
+            return
 
-            # Rate-limit: process at most ~2 fps to avoid CPU saturation
-            if now - self._last_process_time < 0.5:
-                return
-            self._last_process_time = now
+        # Consume so we don't reprocess the same frames
+        self._latest_img1 = None
+        self._latest_img2 = None
 
-            if self.cam1_intrinsics is None:
-                self.cam1_intrinsics = self._camera_info_to_intrinsics(info1_msg)
-            if self.cam2_intrinsics is None:
-                self.cam2_intrinsics = self._camera_info_to_intrinsics(info2_msg)
+        # Check timestamp proximity (replaces ApproximateTimeSynchronizer)
+        t1 = img1_msg.header.stamp.sec + img1_msg.header.stamp.nanosec * 1e-9
+        t2 = img2_msg.header.stamp.sec + img2_msg.header.stamp.nanosec * 1e-9
+        if abs(t1 - t2) > 0.1:
+            return
 
-            img1 = self._imgmsg_to_cv2(img1_msg)
-            img2 = self._imgmsg_to_cv2(img2_msg)
+        now = self.get_clock().now().nanoseconds / 1e9
 
-            T_cam1_boardA = self._detect_and_solve(
-                img1, self.board_a, self.detector_a, self.cam1_intrinsics
-            )
-            T_cam2_boardB = self._detect_and_solve(
-                img2, self.board_b, self.detector_b, self.cam2_intrinsics
-            )
+        img1 = self._imgmsg_to_cv2(img1_msg)
+        img2 = self._imgmsg_to_cv2(img2_msg)
 
-            if T_cam1_boardA is None or T_cam2_boardB is None:
-                if now - self._last_log_time > 3.0:
-                    det_a = T_cam1_boardA is not None
-                    det_b = T_cam2_boardB is not None
-                    self.get_logger().info(
-                        f'Detection — board_a: {"OK" if det_a else "FAIL"}, '
-                        f'board_b: {"OK" if det_b else "FAIL"}  '
-                        f'(frames: {self._frame_count}, '
-                        f'poses: {len(self.pose_pairs)}/{self.min_samples})'
-                    )
-                    self._last_log_time = now
-                return
+        T_cam1_boardA = self._detect_and_solve(
+            img1, self.board_a, self.detector_a, self.cam1_intrinsics
+        )
+        T_cam2_boardB = self._detect_and_solve(
+            img2, self.board_b, self.detector_b, self.cam2_intrinsics
+        )
 
-            if now - self.last_capture_time < self.capture_cooldown_s:
-                return
+        if T_cam1_boardA is None or T_cam2_boardB is None:
+            if now - getattr(self, '_last_log_time', 0.0) > 3.0:
+                det_a = T_cam1_boardA is not None
+                det_b = T_cam2_boardB is not None
+                self.get_logger().info(
+                    f'Detection — board_a: {"OK" if det_a else "FAIL"}, '
+                    f'board_b: {"OK" if det_b else "FAIL"}  '
+                    f'(poses: {len(self.pose_pairs)}/{self.min_samples})'
+                )
+                self._last_log_time = now
+            return
 
-            moved, dt, da = self._movement_from_last(T_cam1_boardA)
-            if not moved:
-                if now - self._last_log_time > 3.0:
-                    self.get_logger().info(
-                        f'Both boards detected, waiting for more movement '
-                        f'(dt={dt:.3f}m, dr={da:.1f}deg). '
-                        f'Need {self.min_translation_m:.2f}m AND '
-                        f'{self.min_rotation_deg:.0f}deg.'
-                    )
-                    self._last_log_time = now
-                return
+        if now - self.last_capture_time < self.capture_cooldown_s:
+            return
 
-            self.pose_pairs.append((T_cam1_boardA.copy(), T_cam2_boardB.copy()))
-            self.last_accepted_T1 = T_cam1_boardA.copy()
-            self.last_capture_time = now
+        moved, dt, da = self._movement_from_last(T_cam1_boardA)
+        if not moved:
+            if now - getattr(self, '_last_log_time', 0.0) > 3.0:
+                self.get_logger().info(
+                    f'Both boards detected, waiting for more movement '
+                    f'(dt={dt:.3f}m, dr={da:.1f}deg). '
+                    f'Need {self.min_translation_m:.2f}m AND '
+                    f'{self.min_rotation_deg:.0f}deg.'
+                )
+                self._last_log_time = now
+            return
 
-            n = len(self.pose_pairs)
-            self.get_logger().info(
-                f'Pose {n}/{self.min_samples} captured '
-                f'(moved {dt:.3f}m, {da:.1f}deg from last)'
-            )
+        self.pose_pairs.append((T_cam1_boardA.copy(), T_cam2_boardB.copy()))
+        self.last_accepted_T1 = T_cam1_boardA.copy()
+        self.last_capture_time = now
 
-            if n >= self.min_samples:
-                self._compute_hand_eye()
-        finally:
-            self._processing_lock.release()
+        n = len(self.pose_pairs)
+        self.get_logger().info(
+            f'Pose {n}/{self.min_samples} captured '
+            f'(moved {dt:.3f}m, {da:.1f}deg from last)'
+        )
+
+        if n >= self.min_samples:
+            self._compute_hand_eye()
 
     def _movement_from_last(self, T_cam1_boardA):
         if self.last_accepted_T1 is None:
@@ -231,8 +251,12 @@ class CalibrationNode(Node):
 
     @staticmethod
     def _imgmsg_to_cv2(msg):
+        if msg.encoding in ('mono8', 'mono16', '8UC1'):
+            channels = 1
+        else:
+            channels = -1
         img = np.frombuffer(msg.data, dtype=np.uint8).reshape(
-            msg.height, msg.width, -1
+            msg.height, msg.width, channels
         )
         if msg.encoding == 'rgb8':
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
@@ -245,7 +269,10 @@ class CalibrationNode(Node):
         return K, D
 
     def _detect_and_solve(self, img, board, detector, intrinsics):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img
         camera_matrix, dist_coeffs = intrinsics
 
         corners, ids, _ = detector.detectMarkers(gray)
@@ -292,11 +319,9 @@ class CalibrationNode(Node):
         t_target2cam = []
 
         for T1, T2 in self.pose_pairs:
-            # gripper2base = inv(T_cam1_boardA) = T_boardA_cam1
             T_g2b = np.linalg.inv(T1)
             R_gripper2base.append(T_g2b[:3, :3])
             t_gripper2base.append(T_g2b[:3, 3].reshape(3, 1))
-            # target2cam = T_cam2_boardB (directly from solvePnP)
             R_target2cam.append(T2[:3, :3])
             t_target2cam.append(T2[:3, 3].reshape(3, 1))
 
@@ -371,7 +396,6 @@ class CalibrationNode(Node):
         link_r = Rotation.from_matrix(T_link[:3, :3])
         link_rpy = link_r.as_euler('xyz')
 
-        # Consistency check: T_boardA_boardB should be constant across poses
         board_transforms = []
         for T1, T2 in self.pose_pairs:
             T_a2b = np.linalg.inv(T1) @ T_opt @ T2
